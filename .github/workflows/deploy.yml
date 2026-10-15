@@ -1,0 +1,77 @@
+name: CI - build, test and tear down an environment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      TF_VAR_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TF_VAR_workers_subdomain: ${{ secrets.WORKERS_SUBDOMAIN }}
+      # Unique names per run, so CI never collides with your own deployment
+      # or with an earlier run.
+      TF_VAR_worker_name: student-task-manager-ci-${{ github.run_id }}
+      TF_VAR_kv_namespace_name: student_tasks_ci_${{ github.run_id }}
+      TF_VAR_environment: ci
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init
+        id: init
+        run: terraform init
+
+      - name: Terraform fmt (check)
+        run: terraform fmt -check
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Smoke test the deployed app
+        run: |
+          URL=$(terraform output -raw application_url)
+          echo "Testing $URL"
+          code=000
+          for i in $(seq 1 18); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$URL/api/tasks" || true)
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          test "$code" = "200"
+          echo "Creating a task..."
+          curl -sf -X POST "$URL/api/tasks" \
+            -H "Content-Type: application/json" \
+            -d '{"title":"CI smoke test"}' | tee created.json
+          grep -q '"id"' created.json
+          echo
+          echo "Listing tasks..."
+          curl -sf "$URL/api/tasks"
+          echo
+
+      # Runs even if an earlier step failed, so half-built environments are removed.
+      - name: Terraform destroy
+        if: always() && steps.init.outcome == 'success'
+        run: terraform destroy -auto-approve
