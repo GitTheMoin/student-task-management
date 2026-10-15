@@ -183,7 +183,7 @@ const PAGE = `<!DOCTYPE html>
 </head>
 <body>
 <main>
-  <h1>Cloud-Based Student Task Manager</h1>
+  <h1>Cloud-Based Student Task Manager v2</h1>
   <p class="sub">Cloudflare Workers + Workers KV, deployed with Terraform &middot; environment: __ENV__</p>
 
   <div class="card">
