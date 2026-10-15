@@ -52,42 +52,85 @@ jobs:
       - name: Smoke test the deployed app
         run: |
           URL=$(terraform output -raw application_url)
+          SLEEP=${SMOKE_SLEEP:-10}
           echo "Testing $URL"
-          code=000
-          for i in $(seq 1 30); do
-            out=$(curl -s -o /dev/null -m 15 -w "%{http_code}|%{errormsg}" "$URL/api/tasks" || true)
-            code=${out%%|*}
-            echo "attempt $i: HTTP $code ${out#*|}"
-            [ "$code" = "200" ] && break
-            sleep 10
-          done
-          test "$code" = "200"
-          echo "Creating a task..."
-          status=$(curl -s -o created.json -w "%{http_code}" -X POST "$URL/api/tasks" \
-            -H "Content-Type: application/json" \
-            -d '{"title":"CI smoke test"}' || true)
-          echo "POST /api/tasks -> HTTP $status"
-          cat created.json 2>/dev/null || true
-          echo
-          test "$status" = "201"
-          grep -q '"id"' created.json
-          # KV is eventually consistent: a key listing can lag behind a write,
-          # so poll the list instead of expecting the new task immediately.
-          echo "Waiting for the task to appear in the list..."
+
+          # A brand-new workers.dev hostname can be unknown to some Cloudflare
+          # edge locations for a while. They answer with a plain-text 404
+          # ("error code: 1042") that never reaches the Worker. The Worker itself
+          # always answers with JSON, so JSON is the signal that we reached it.
+
+          # request METHOD PATH [JSON_BODY]  ->  sets STATUS, CTYPE, BODY, IS_JSON
+          request() {
+            local method=$1 path=$2 data=${3:-}
+            local args=(-s -m 15 -o resp.body -D resp.head -w "%{http_code}" -X "$method" "$URL$path")
+            if [ -n "$data" ]; then
+              args+=(-H "Content-Type: application/json" -d "$data")
+            fi
+            rm -f resp.body resp.head
+            STATUS=$(curl "${args[@]}" 2>/dev/null || true)
+            [ -n "$STATUS" ] || STATUS=000
+            CTYPE=$(grep -i '^content-type:' resp.head 2>/dev/null | tail -1 | tr -d '\r' | cut -d' ' -f2- || true)
+            BODY=$(head -c 120 resp.body 2>/dev/null | tr '\n' ' ' || true)
+            IS_JSON=no
+            case "$CTYPE" in application/json*) IS_JSON=yes ;; esac
+          }
+
+          # wait_for LABEL METHOD PATH EXPECTED_STATUS MAX_ATTEMPTS [JSON_BODY] [SUCCESSES_NEEDED]
+          # Retries on 000, timeouts, 5xx and any non-JSON answer (edge 1042).
+          # A JSON answer other than the expected status is also retried, except
+          # JSON 400 (validation error), which fails immediately.
+          wait_for() {
+            local label=$1 method=$2 path=$3 expected=$4 max=$5 data=${6:-} needed=${7:-1}
+            local streak=0 i
+            for i in $(seq 1 "$max"); do
+              request "$method" "$path" "$data"
+              echo "[$label] attempt $i: HTTP $STATUS | ${CTYPE:-no content-type} | $BODY"
+              if [ "$IS_JSON" = yes ] && [ "$STATUS" = 400 ]; then
+                echo "[$label] validation error from the Worker, not retrying"
+                return 1
+              fi
+              if [ "$IS_JSON" = yes ] && [ "$STATUS" = "$expected" ]; then
+                streak=$((streak + 1))
+                if [ "$streak" -ge "$needed" ]; then
+                  return 0
+                fi
+              else
+                streak=0
+              fi
+              sleep "$SLEEP"
+            done
+            echo "[$label] gave up after $max attempts"
+            return 1
+          }
+
+          # 1. Worker reachable: JSON 200 twice in a row
+          wait_for "reachable" GET /api/tasks 200 30 "" 2
+
+          # 2. Create a task (retry until JSON 201)
+          wait_for "create" POST /api/tasks 201 30 '{"title":"CI smoke test"}'
+          cp resp.body created.json
+          ID=$(sed -n 's/.*"id" *: *"\([^"]*\)".*/\1/p' created.json | head -1)
+          test -n "$ID"
+          echo "Created task $ID"
+
+          # 3. Read it back by id (a get by key shows up sooner than a list)
+          wait_for "get by id" GET "/api/tasks/$ID" 200 30
+
+          # 4. KV listings are eventually consistent: wait for the title to appear
           found=no
           for i in $(seq 1 18); do
-            curl -s -o list.json "$URL/api/tasks" || true
-            if grep -q 'CI smoke test' list.json; then
+            request GET /api/tasks
+            if [ "$IS_JSON" = yes ] && [ "$STATUS" = 200 ] && grep -q 'CI smoke test' resp.body; then
               found=yes
-              echo "attempt $i: task found"
+              echo "[list] attempt $i: task found"
               break
             fi
-            echo "attempt $i: not listed yet: $(cat list.json)"
-            sleep 10
+            echo "[list] attempt $i: HTTP $STATUS | ${CTYPE:-no content-type} | $BODY"
+            sleep "$SLEEP"
           done
-          cat list.json
-          echo
           test "$found" = "yes"
+          echo "Smoke test passed"
 
       # Runs even if an earlier step failed, so half-built environments are removed.
       - name: Terraform destroy
