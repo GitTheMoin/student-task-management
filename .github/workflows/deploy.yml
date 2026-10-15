@@ -54,9 +54,10 @@ jobs:
           URL=$(terraform output -raw application_url)
           echo "Testing $URL"
           code=000
-          for i in $(seq 1 18); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$URL/api/tasks" || true)
-            echo "attempt $i: HTTP $code"
+          for i in $(seq 1 30); do
+            out=$(curl -s -o /dev/null -m 15 -w "%{http_code}|%{errormsg}" "$URL/api/tasks" || true)
+            code=${out%%|*}
+            echo "attempt $i: HTTP $code ${out#*|}"
             [ "$code" = "200" ] && break
             sleep 10
           done
