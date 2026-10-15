@@ -71,13 +71,23 @@ jobs:
           echo
           test "$status" = "201"
           grep -q '"id"' created.json
-          echo "Listing tasks..."
-          status=$(curl -s -o list.json -w "%{http_code}" "$URL/api/tasks" || true)
-          echo "GET /api/tasks -> HTTP $status"
-          cat list.json 2>/dev/null || true
+          # KV is eventually consistent: a key listing can lag behind a write,
+          # so poll the list instead of expecting the new task immediately.
+          echo "Waiting for the task to appear in the list..."
+          found=no
+          for i in $(seq 1 18); do
+            curl -s -o list.json "$URL/api/tasks" || true
+            if grep -q 'CI smoke test' list.json; then
+              found=yes
+              echo "attempt $i: task found"
+              break
+            fi
+            echo "attempt $i: not listed yet: $(cat list.json)"
+            sleep 10
+          done
+          cat list.json
           echo
-          test "$status" = "200"
-          grep -q 'CI smoke test' list.json
+          test "$found" = "yes"
 
       # Runs even if an earlier step failed, so half-built environments are removed.
       - name: Terraform destroy
