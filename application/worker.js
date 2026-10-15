@@ -154,7 +154,7 @@ const PAGE = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cloud-Based Student Task Manager</title>
+<title>Cloud-Based Student Task Manager v2</title>
 <style>
   :root { --bg:#f5f7fa; --card:#fff; --text:#1f2933; --muted:#6b7785; --accent:#2563eb; --danger:#dc2626; --border:#e1e6ec; }
   * { box-sizing: border-box; }
