@@ -63,14 +63,21 @@ jobs:
           done
           test "$code" = "200"
           echo "Creating a task..."
-          curl -sf -X POST "$URL/api/tasks" \
+          status=$(curl -s -o created.json -w "%{http_code}" -X POST "$URL/api/tasks" \
             -H "Content-Type: application/json" \
-            -d '{"title":"CI smoke test"}' | tee created.json
+            -d '{"title":"CI smoke test"}' || true)
+          echo "POST /api/tasks -> HTTP $status"
+          cat created.json 2>/dev/null || true
+          echo
+          test "$status" = "201"
           grep -q '"id"' created.json
-          echo
           echo "Listing tasks..."
-          curl -sf "$URL/api/tasks"
+          status=$(curl -s -o list.json -w "%{http_code}" "$URL/api/tasks" || true)
+          echo "GET /api/tasks -> HTTP $status"
+          cat list.json 2>/dev/null || true
           echo
+          test "$status" = "200"
+          grep -q 'CI smoke test' list.json
 
       # Runs even if an earlier step failed, so half-built environments are removed.
       - name: Terraform destroy
